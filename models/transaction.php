@@ -26,7 +26,7 @@ class Transaction {
 
     public function getTopSeller(int $days = 30): string {
         $sql = "SELECT p.name AS product_name, SUM(si.quantity) AS total_sold
-                FROM sales_items si
+                FROM sales_total si
                 JOIN sales s ON si.sale_id = s.id
                 JOIN products p ON si.product_id = p.id
                 WHERE s.created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
@@ -39,7 +39,7 @@ class Transaction {
 
     public function getTopProducts(int $days = 30): array {
         $sql = "SELECT p.name AS product_name, SUM(si.quantity) AS total_sold
-                FROM sales_items si
+                FROM sales_total si
                 JOIN sales s ON si.sale_id = s.id
                 JOIN products p ON si.product_id = p.id
                 WHERE s.created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)

@@ -1,48 +1,67 @@
 <?php
-header('Content-Type: application/json; charset=utf-8');
+// checkout.php
+require_once __DIR__ . '/../database/db.php';
 require_once __DIR__ . '/../classes/database.php';
 require_once __DIR__ . '/../classes/product.php';
-require_once __DIR__ . '/../classes/sale.php';
+
+header('Content-Type: application/json');
 
 $db = new Database();
-$productModel = new Product($db);
-$saleModel = new Sale($db);
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode(['success'=>false,'error'=>'Method not allowed']);
+$input = json_decode(file_get_contents('php://input'), true);
+
+if (!$input || !isset($input['payment_amount']) || !isset($input['items'])) {
+    echo json_encode(['success' => false, 'error' => 'Invalid input']);
     exit;
 }
 
-$body = json_decode(file_get_contents('php://input'), true);
-if (!$body || !isset($body['items']) || !is_array($body['items'])) {
-    http_response_code(400);
-    echo json_encode(['success'=>false,'error'=>'Invalid payload']);
+$payment_amount = (float) $input['payment_amount'];
+$items = $input['items'];
+
+if ($payment_amount <= 0 || empty($items)) {
+    echo json_encode(['success' => false, 'error' => 'Invalid payment amount or items']);
     exit;
 }
-
-$customerName = trim($body['customer_name'] ?? 'Guest');
-$paymentAmount = (float)($body['payment_amount'] ?? 0);
-$items = $body['items'];
 
 try {
-    $prepared = [];
-    foreach ($items as $it) {
-        if (!isset($it['product_id'], $it['quantity'])) throw new Exception("Invalid item structure");
-        $p = $productModel->find((int)$it['product_id']);
-        if (!$p) throw new Exception("Product not found");
-        if ($p['stock'] < $it['quantity']) throw new Exception("Insufficient stock for {$p['name']}");
-        $prepared[] = [
-            'product_id' => (int)$p['id'],
-            'product_name' => $p['name'],
-            'unit_price' => (float)$p['price'],
-            'quantity' => (int)$it['quantity']
-        ];
+    // Assuming Database class has beginTransaction, commit, rollback methods
+    $db->beginTransaction();
+
+    // Insert into sales table using Database class execute method (assuming it exists and supports parameterized queries)
+    // If not, you'll need to add an insert method to Database class or use raw PDO.
+    $db->execute("INSERT INTO sales (total, created_at) VALUES (?, ?)", [$payment_amount, date('Y-m-d H:i:s')]);
+    // Assuming execute returns the last insert ID or you can fetch it
+    $sale_id = $db->fetch("SELECT LAST_INSERT_ID() AS id")['id'];
+
+    if (!$sale_id) {
+        throw new Exception('Failed to insert sale');
     }
 
-    $saleId = $saleModel->create($paymentAmount, $prepared);
-    echo json_encode(['success'=>true,'sale_id'=>$saleId]);
+    // Assuming there's a sales_items table with columns: id, sale_id, product_id, quantity, price
+    // If not, adjust accordingly.
+    foreach ($items as $item) {
+        $product_id = (int) $item['product_id'];
+        $quantity = (int) $item['quantity'];
+
+        if ($product_id <= 0 || $quantity <= 0) {
+            throw new Exception('Invalid item data');
+        }
+
+        // Fetch product price using Database class fetch method
+        $product = $db->fetch("SELECT price FROM products WHERE id = ?", [$product_id]);
+        if (!$product) {
+            throw new Exception('Product not found');
+        }
+        $price = (float) $product['price'];
+
+        // Insert into sales_items using execute
+        $db->execute("INSERT INTO sales_items (sale_id, product_id, quantity, price) VALUES (?, ?, ?, ?)", [$sale_id, $product_id, $quantity, $price]);
+    }
+
+    $db->commit();
+    echo json_encode(['success' => true]);
 } catch (Exception $e) {
-    http_response_code(400);
-    echo json_encode(['success'=>false,'error'=>$e->getMessage()]);
+    $db->rollback();
+    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }
+?>

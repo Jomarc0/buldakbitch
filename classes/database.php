@@ -21,6 +21,7 @@ class Database {
 
     public function fetch(string $sql, array $params = []): ?array {
         $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);  
         $r = $stmt->fetch();
         return $r === false ? null : $r;
     }
