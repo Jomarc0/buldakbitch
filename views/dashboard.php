@@ -12,23 +12,19 @@ if (isset($_SESSION['CashierName'])) {
     $cashierName = $_SESSION['CashierName'];
 }
 
-// Get dashboard statistics (no owner filtering)
-// Removed $totalCustomers = $transaction->getCustomerCount();
+
 $totalSales = $transaction->getTotalSales(30);
 $totalOrders = $transaction->getTotalOrders(30);
 
-// Get today's sales total
 $todaySales = 0;
 $result = $con->fetch("SELECT SUM(total_amount) AS total FROM sales WHERE DATE(created_at) = CURDATE()");
 if ($result && isset($result['total'])) {
     $todaySales = (float) $result['total'];
 }
 
-// Get sales data for charts
 $salesData = $transaction->getSalesOverviewData(30);
 $topProducts = $transaction->getTopProducts(30);
 
-// Determine the single top-selling product for the summary card
 $topSellerName = 'N/A';
 if (!empty($topProducts['labels'][0])) {
     $topSellerName = $topProducts['labels'][0];
