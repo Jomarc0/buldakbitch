@@ -12,6 +12,9 @@ class Product {
     public function find(int $id): ?array {
         return $this->db->fetch("SELECT * FROM products WHERE id = ?", [$id]);
     }
+    public function findByName(string $name): ?array {
+        return $this->db->fetch("SELECT * FROM products WHERE name = ?", [$name]);
+    }
 
     public function decreaseStock(int $id, int $qty): bool {
         return $this->db->execute("UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?", [$qty, $id, $qty]);

@@ -2,11 +2,35 @@
 require_once __DIR__ . '/../database/db.php';
 require_once __DIR__ . '/../classes/database.php';
 require_once __DIR__ . '/../classes/product.php';
-require_once __DIR__ . '/../classes/sale.php';  
+require_once __DIR__ . '/../classes/sale.php';
 
 $db = new Database();
 $productModel = new Product($db);
 $saleModel = new Sale($db);
+
+$bundles = [
+    'cheesy buldak omelette' => [
+        'components' => [
+            ['name' => 'Cheesy Buldak', 'quantity' => 1],
+        ]
+    ],
+    'cheesy buldak overload' => [
+        'components' => [
+            ['name' => 'Cheesy Buldak', 'quantity' => 1],
+            ['name' => 'Spam', 'quantity' => 1],
+            ['name' => 'Egg', 'quantity' => 1],
+        ]
+    ],
+];
+
+$staticProducts = [
+    ['id' => 1, 'name' => 'Egg', 'price' => 13.00, 'category' => 'Add ons'],
+    ['id' => 2, 'name' => 'Cheesy Buldak', 'price' => 129.00, 'category' => 'Main'],
+    ['id' => 3, 'name' => 'Cheesy Buldak Overload', 'price' => 139.00, 'category' => 'Main'],
+    ['id' => 4, 'name' => 'Cheesy Buldak Omelette', 'price' => 149.00, 'category' => 'Main'],
+    ['id' => 5, 'name' => 'Spam', 'price' => 15.00, 'category' => 'Add ons'],
+    ['id' => 6, 'name' => 'Seaweeds', 'price' => 20.00, 'category' => 'Add ons'],
+];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
@@ -21,32 +45,105 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $items = $input['items'];
     $total = 0;
     $prepared = [];
+    $stockDeductions = []; 
     
     try {
+        $db->beginTransaction();
+        
         foreach ($items as $item) {
-            $product = $productModel->find($item['product_id']);
-            if (!$product) {
+            $staticProduct = null;
+            foreach ($staticProducts as $sp) {
+                if ($sp['id'] == $item['product_id']) {
+                    $staticProduct = $sp;
+                    break;
+                }
+            }
+            
+            if (!$staticProduct) {
                 throw new Exception('Product not found');
             }
-            if ($product['stock'] < $item['quantity']) {
-                throw new Exception('Insufficient stock for ' . $product['name']);
+            
+            $productName = strtolower($staticProduct['name']);
+            
+            if (isset($bundles[$productName])) {
+                $bundleComponents = $bundles[$productName]['components'];
+                
+                foreach ($bundleComponents as $component) {
+                    $compProduct = $productModel->findByName($component['name']);
+                    if (!$compProduct) {
+                        throw new Exception('Component not found: ' . $component['name']);
+                    }
+                    
+                    $requiredQty = $component['quantity'] * $item['quantity'];
+                    
+                    if ($compProduct['stock'] < $requiredQty) {
+                        throw new Exception('Insufficient stock for ' . $component['name'] . '. Available: ' . $compProduct['stock'] . ', Required: ' . $requiredQty);
+                    }
+                    
+                    if (!isset($stockDeductions[$compProduct['id']])) {
+                        $stockDeductions[$compProduct['id']] = 0;
+                    }
+                    $stockDeductions[$compProduct['id']] += $requiredQty;
+                }
+                
+                $prepared[] = [
+                    'product_id' => $staticProduct['id'],
+                    'product_name' => $staticProduct['name'],
+                    'unit_price' => $staticProduct['price'],
+                    'quantity' => $item['quantity']
+                ];
+                $total += $staticProduct['price'] * $item['quantity'];
+                
+            } else {
+                $dbProduct = $productModel->find($item['product_id']);
+                if (!$dbProduct) {
+                    throw new Exception('Product not found in database');
+                }
+                
+                if ($dbProduct['stock'] < $item['quantity']) {
+                    throw new Exception('Insufficient stock for ' . $dbProduct['name'] . '. Available: ' . $dbProduct['stock'] . ', Required: ' . $item['quantity']);
+                }
+                
+                if (!isset($stockDeductions[$dbProduct['id']])) {
+                    $stockDeductions[$dbProduct['id']] = 0;
+                }
+                $stockDeductions[$dbProduct['id']] += $item['quantity'];
+                
+                $prepared[] = [
+                    'product_id' => $dbProduct['id'],
+                    'product_name' => $dbProduct['name'],
+                    'unit_price' => $dbProduct['price'],
+                    'quantity' => $item['quantity']
+                ];
+                $total += $dbProduct['price'] * $item['quantity'];
             }
-            $prepared[] = [
-                'product_id' => $product['id'],
-                'product_name' => $product['name'],
-                'unit_price' => $product['price'],
-                'quantity' => $item['quantity']
-            ];
-            $total += $product['price'] * $item['quantity'];
         }
         
         if ($paymentAmount < $total) {
             throw new Exception('Payment amount is less than total. Total: ₱' . number_format($total, 2) . ', Paid: ₱' . number_format($paymentAmount, 2));
         }
         
-        $saleId = $saleModel->create($paymentAmount, $prepared);  // Pass payment_amount to create method
+        $changeAmount = $paymentAmount - $total;
+        
+        $db->execute("INSERT INTO sales (total, payment_amount, change_amount, total_amount) VALUES (?, ?, ?, ?)", 
+            [$total, $paymentAmount, $changeAmount, $total]);
+        $saleId = (int)$db->lastInsertId(); 
+
+        foreach ($prepared as $saleItem) {
+            $subtotal = $saleItem['unit_price'] * $saleItem['quantity'];
+            $db->execute("INSERT INTO sales_total (sale_id, product_id, product_name, unit_price, quantity, subtotal) VALUES (?, ?, ?, ?, ?, ?)",
+                [$saleId, $saleItem['product_id'], $saleItem['product_name'], $saleItem['unit_price'], $saleItem['quantity'], $subtotal]);
+        }
+        
+        foreach ($stockDeductions as $productId => $qtyToDeduct) {
+            $db->execute("UPDATE products SET stock = stock - ? WHERE id = ?", [$qtyToDeduct, $productId]);
+        }
+        
+        $db->commit();
         echo json_encode(['success' => true, 'sale_id' => $saleId]);
+        
     } catch (Exception $e) {
+        $db->rollback();
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
     }
     exit;
@@ -57,8 +154,6 @@ $result = $db->fetch("SELECT SUM(total_amount) AS total FROM sales WHERE DATE(cr
 if ($result) {
     $todayTotal = (float)($result['total'] ?? 0);
 }
-
-$products = $productModel->all();
 ?>
 
 <!DOCTYPE html>
@@ -108,24 +203,15 @@ $products = $productModel->all();
       </div>
     </header>
 
-    <!-- Category buttons -->
-    <nav id="category-nav" class="flex gap-2 md:gap-3 mb-3 overflow-x-auto whitespace-nowrap scrollbar-thin scrollbar-thumb-[#c4b09a] scrollbar-track-transparent px-1">
-      <button class="category-btn active flex items-center gap-2 bg-[#4B2E0E] text-white shadow-md rounded-full py-2 px-3 md:px-5 text-sm font-semibold" data-category="all"><i class="fas fa-grip-horizontal"></i> All</button>
-      <button class="category-btn flex items-center gap-2 bg-white border border-gray-300 text-gray-700 rounded-full py-2 px-3 md:px-5 text-sm font-semibold" data-category="signatures"><i class="fas fa-fire"></i> Signatures</button>
-      <button class="category-btn flex items-center gap-2 bg-white border border-gray-300 text-gray-700 rounded-full py-2 px-3 md:px-5 text-sm font-semibold" data-category="add-ons"><i class="fas fa-plus"></i> Add-ons</button>
-      <button class="category-btn flex items-center gap-2 bg-white border border-gray-300 text-gray-700 rounded-full py-2 px-3 md:px-5 text-sm font-semibold" data-category="drinks"><i class="fas fa-glass-whiskey"></i> Drinks</button>
-    </nav>
-
-    <!-- Menu items -->
+    <!-- Static Menu items -->
     <section class="bg-white bg-opacity-90 backdrop-blur-sm rounded-xl p-4 max-h-[400px] md:max-h-[600px] overflow-y-auto shadow-lg flex-1" id="menu-scroll">
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" id="menu-items">
-        <?php foreach ($products as $row): ?>
+        <?php foreach ($staticProducts as $row): ?>
           <article class="bg-white rounded-lg shadow-md p-3 flex flex-col items-center menu-item"
-            data-category="<?= htmlspecialchars($row['category']) ?>"
             data-id="<?= $row['id'] ?>"
             data-name="<?= htmlspecialchars($row['name']) ?>"
             data-price="<?= $row['price'] ?>">
-            <img src="<?= $row['image'] ?: 'https://placehold.co/80x80/png?text=' . urlencode($row['name']) ?>" alt="<?= htmlspecialchars($row['name']) ?>" class="mb-2 w-16 h-16 md:w-20 md:h-20 object-cover rounded">
+            <img src="https://placehold.co/80x80/png?text=<?= urlencode($row['name']) ?>" alt="<?= htmlspecialchars($row['name']) ?>" class="mb-2 w-16 h-16 md:w-20 md:h-20 object-cover rounded">
             <h3 class="font-semibold text-sm text-[#4B2E0E] mb-1 text-center leading-tight"><?= htmlspecialchars($row['name']) ?></h3>
             <p class="font-semibold text-xs text-[#4B2E0E] mb-2">₱ <?= number_format($row['price'], 2) ?></p>
             <div class="item-controls w-full">
@@ -140,38 +226,39 @@ $products = $productModel->all();
     </section>
   </main>
 
-  <!-- Order Summary -->
+
   <aside class="w-full md:w-80 bg-white bg-opacity-90 backdrop-blur-sm rounded-xl shadow-lg flex flex-col justify-between p-4 mt-4 md:mt-0">
     <div>
-      <h2 class="font-semibold text-[#4B2E0E] mb-2">Order Summary</h2>
-      <div class="text-xs text-gray-700 max-h-40 overflow-y-auto" id="order-list"></div>
+      <h2 class="font-semibold text-[#4B2E0E] mb-2 text-xl">Order Summary</h2>
+      <div class="text-sm text-gray-700 max-h-40 overflow-y-auto" id="order-list"></div>
     </div>
     <div class="mt-6">
-      <p class="font-semibold mb-1">Total:</p>
-      <p class="text-3xl md:text-4xl font-extrabold text-[#4B2E0E]" id="order-total">₱ 0.00</p>
+      <p class="font-semibold mb-1 text-lg">Total:</p>
+      <p class="text-4xl md:text-5xl font-extrabold text-[#4B2E0E]" id="order-total">₱ 0.00</p>
       <div class="mt-4">
-        <label for="payment-amount" class="block text-sm font-medium text-gray-700">Payment Amount</label>
-        <input type="number" id="payment-amount" step="0.01" min="0" class="w-full border border-gray-300 rounded-lg px-3 py-3 mt-1 focus:outline-none focus:ring-2 focus:ring-[#4B2E0E] min-h-[44px]" placeholder="Enter payment amount">
+        <label for="payment-amount" class="block text-base font-medium text-gray-700">Payment Amount</label>
+        <input type="number" id="payment-amount" step="0.01" min="0" class="w-full border border-gray-300 rounded-lg px-3 py-3 mt-1 focus:outline-none focus:ring-2 focus:ring-[#4B2E0E] min-h-[44px] text-lg" placeholder="Enter payment amount">
       </div>
       <div class="mt-2">
-        <p class="text-sm text-gray-600">Change: <span id="change-amount">₱ 0.00</span></p>
+        <p class="text-lg text-gray-600">Change: <span id="change-amount">₱ 0.00</span></p>
       </div>
     </div>
     <div class="mt-6 flex gap-4">
-      <button class="flex-1 bg-green-500 text-white rounded-lg py-3 font-semibold confirm-btn min-h-[44px]" id="confirm-btn" disabled>Confirm</button>
-      <button class="flex-1 bg-red-500 text-white rounded-lg py-3 font-semibold cancel-btn min-h-[44px]" id="cancel-btn" disabled>Cancel</button>
+      <button class="flex-1 bg-green-500 text-white rounded-lg py-3 font-semibold confirm-btn min-h-[44px] text-lg" id="confirm-btn" disabled>Confirm</button>
+      <button class="flex-1 bg-red-500 text-white rounded-lg py-3 font-semibold cancel-btn min-h-[44px] text-lg" id="cancel-btn" disabled>Cancel</button>
     </div>
   </aside>
+
 
   <script>
     // Mobile menu toggle
     const sidebar = document.getElementById('sidebar');
     const toggle = document.getElementById('mobile-menu-toggle');
     toggle.addEventListener('click', () => {
-            const isOpen = !sidebar.classList.contains('-translate-x-full');
-            sidebar.classList.toggle('-translate-x-full');
-            toggle.style.display = isOpen ? 'block' : 'none';  // Hide toggle when sidebar is open
-        });
+      const isOpen = !sidebar.classList.contains('-translate-x-full');
+      sidebar.classList.toggle('-translate-x-full');
+      toggle.style.display = isOpen ? 'block' : 'none';
+    });
 
     let order = {};
     const orderList = document.getElementById("order-list");
@@ -236,26 +323,6 @@ $products = $productModel->all();
       btn.addEventListener('click', () => updateQuantity(id, name, price, 1, article));
     });
 
-    document.querySelectorAll('.category-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.category-btn').forEach(b => {
-          b.classList.remove('active', 'bg-[#4B2E0E]', 'text-white', 'shadow-md');
-          b.classList.add('bg-white', 'border', 'border-gray-300', 'text-gray-700');
-        });
-        btn.classList.add('active', 'bg-[#4B2E0E]', 'text-white', 'shadow-md');
-        btn.classList.remove('bg-white', 'border', 'border-gray-300', 'text-gray-700');
-        
-        const category = btn.dataset.category;
-        document.querySelectorAll('.menu-item').forEach(item => {
-          if (category === 'all' || item.dataset.category === category) {
-            item.style.display = 'flex';
-          } else {
-            item.style.display = 'none';
-          }
-        });
-      });
-    });
-
     function renderOrder() {
       orderList.innerHTML = '';
       const entries = Object.values(order);
@@ -270,7 +337,7 @@ $products = $productModel->all();
         return;
       }
       
-      orderList.innerHTML += '<p class="font-semibold mb-1">CATEGORY</p>';
+      orderList.innerHTML += '<p class="font-semibold mb-1">ITEMS</p>';
       entries.forEach(item => {
         const subtotal = item.price * item.quantity;
         total += subtotal;
@@ -286,7 +353,7 @@ $products = $productModel->all();
         orderList.appendChild(div);
       });
       orderTotalEl.textContent = `₱ ${total.toFixed(2)}`;
-      paymentAmountEl.value = total.toFixed(2); // Default to total
+      paymentAmountEl.value = total.toFixed(2);
       updateChange();
       confirmBtn.disabled = false;
       cancelBtn.disabled = false;
@@ -329,19 +396,21 @@ $products = $productModel->all();
 
       const total = parseFloat(orderTotalEl.textContent.replace(/[₱ ,]/g, '')) || 0;
       const paymentAmount = parseFloat(paymentAmountEl.value) || 0;
+      
       if (paymentAmount < total) {
         Swal.fire('Insufficient Payment!', 'Payment amount must be at least the total.', 'error');
         return;
       }
 
-      const items = Object.keys(order).map(id => ({
-        product_id: parseInt(id),
-        quantity: order[id].quantity
-      }));
+      const items = [];
+      for (const [id, item] of Object.entries(order)) {
+        items.push({
+          product_id: parseInt(id),
+          quantity: item.quantity
+        });
+      }
 
-      console.log('Sending data:', { payment_amount: paymentAmount, items: items });
-
-      fetch(window.location.href, {  // Fetch to the same page (pos.php)
+      fetch(window.location.href, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ payment_amount: paymentAmount, items: items })
@@ -370,13 +439,6 @@ $products = $productModel->all();
         console.error('Fetch error:', err);
         Swal.fire('Error!', 'An error occurred while trying to save the sale.', 'error');
       });
-    });
-
-    document.addEventListener('DOMContentLoaded', () => {
-      const allButton = document.querySelector('.category-btn[data-category="all"]');
-      if (allButton) {
-        allButton.click();
-      }
     });
   </script>
 </body>

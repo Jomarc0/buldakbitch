@@ -8,7 +8,6 @@ $transaction = new Transaction($con);
 
 $cashierName = 'Cashier'; 
 
-
 if (isset($_SESSION['CashierName'])) {
     $cashierName = $_SESSION['CashierName'];
 }
@@ -17,6 +16,13 @@ if (isset($_SESSION['CashierName'])) {
 // Removed $totalCustomers = $transaction->getCustomerCount();
 $totalSales = $transaction->getTotalSales(30);
 $totalOrders = $transaction->getTotalOrders(30);
+
+// Get today's sales total
+$todaySales = 0;
+$result = $con->fetch("SELECT SUM(total_amount) AS total FROM sales WHERE DATE(created_at) = CURDATE()");
+if ($result && isset($result['total'])) {
+    $todaySales = (float) $result['total'];
+}
 
 // Get sales data for charts
 $salesData = $transaction->getSalesOverviewData(30);
@@ -131,7 +137,12 @@ if (!empty($topProducts['labels'][0])) {
         </header>
 
         <!-- Summary Cards -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6 z-10">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 z-10">
+            <div class="bg-white rounded-lg shadow-md p-4">
+                <h5 class="text-lg font-semibold text-gray-700">Today's Sales</h5>
+                <p class="text-2xl md:text-3xl font-bold text-[#4B2E0E]">₱<?= number_format($todaySales, 2); ?></p>
+                <small class="text-gray-500">Resets daily</small>
+            </div>
             <div class="bg-white rounded-lg shadow-md p-4">
                 <h5 class="text-lg font-semibold text-gray-700">Total Sales</h5>
                 <p class="text-2xl md:text-3xl font-bold text-[#4B2E0E]" id="totalSales">₱<?= number_format($totalSales, 2); ?></p>
